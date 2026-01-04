@@ -40,6 +40,7 @@ from dojo.core.tasks.constants import (
     VALIDATION_FITNESS,
     AUX_EVAL_INFO,
     VALID_SOLUTION,
+    COMP_NAME
 )
 import time
 
@@ -47,7 +48,9 @@ from dojo.core.solvers.llm_helpers.generic_llm import GenericLLM
 
 from dojo.config_dataclasses.solver.greedy import GreedySolverConfig
 from dojo.utils.state import GreedyState
-
+from .reward import RewardModelInference
+from transformers import AutoTokenizer
+import os
 
 class Greedy(Solver):
     """Greedy solver."""
@@ -72,6 +75,23 @@ class Greedy(Solver):
         self.setup_operators()
 
         self.state = GreedyState()
+        reward_model_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/last_run_7"
+        reward_base_model = "Qwen/Qwen3-4B"
+
+        adapter_path = os.path.join(reward_model_path, "lora_adapter")
+        reward_head_path = os.path.join(reward_model_path, "reward_head.pt")
+
+        self.tokenizer = AutoTokenizer.from_pretrained(reward_base_model)
+        if not getattr(self.tokenizer, "pad_token", None):
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+
+        self.reward_model = RewardModelInference(
+            base_model_name=reward_base_model,
+            adapter_path=adapter_path,
+            reward_head_path=reward_head_path,
+            device="cuda"
+        )
+        self.reward_model.eval()
 
     def save_checkpoint(self):
         super().save_checkpoint()
@@ -250,20 +270,61 @@ class Greedy(Solver):
             Node: A new node containing the drafted solution
         """
         self.logger.info(f"Step {self.state.current_step}: Starting to drafting new solution")
-        plan, code, metrics = execute_op_plan_code(
-            self.draft_fn,
-            self.task_desc,
-            self.journal,
-            self.state.current_step,
-            self.cfg.time_limit_secs - self.state.running_time,
-            self.data_preview,
-            get_complextiy_level(num=len(self.journal.draft_nodes)) if self.cfg.use_complexity else None,
-            self.root_node,
-            max_operator_tries=self.cfg.max_llm_call_retries,
-        )
-        node = Node(
-            plan=plan, code=code, operators_used=["draft"], operators_metrics=[metrics], parents=[self.root_node]
-        )
+        add_reward = True
+        if add_reward == False:
+            plan, code, metrics = execute_op_plan_code(
+                self.draft_fn,
+                self.task_desc,
+                self.journal,
+                self.state.current_step,
+                self.cfg.time_limit_secs - self.state.running_time,
+                self.data_preview,
+                get_complextiy_level(num=len(self.journal.draft_nodes)) if self.cfg.use_complexity else None,
+                self.root_node,
+                max_operator_tries=self.cfg.max_llm_call_retries,
+            )
+            node = Node(
+                plan=plan, code=code, operators_used=["draft"], operators_metrics=[metrics], parents=[self.root_node]
+            )
+        else:
+            candidate_nodes = []
+            for i in range(3):
+                self.logger.info(f"Drafting candidate solution with reward model.")
+                plan, code, metrics = execute_op_plan_code(
+                    self.draft_fn,
+                    self.task_desc,
+                    self.journal,
+                    self.state.current_step,
+                    self.cfg.time_limit_secs - self.state.running_time,
+                    self.data_preview,
+                    get_complextiy_level(num=len(self.journal.draft_nodes)) if self.cfg.use_complexity else None,
+                    self.root_node,
+                    max_operator_tries=self.cfg.max_llm_call_retries,
+                )
+                node = Node(
+                    plan=plan, code=code, operators_used=["draft"], operators_metrics=[metrics], parents=[self.root_node]
+                )
+                candidate_nodes.append(node)
+
+            competition_mapping_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/comp_to_scen.json"
+            comp_dict_path = competition_mapping_path
+            with open(comp_dict_path, "r") as f:
+                comp_dict = json.load(f)
+            comp_description = comp_dict[COMP_NAME]
+            rewards = []
+            for cand_node in candidate_nodes:
+                parents = cand_node.parents
+                parents.append(cand_node)
+                hypothesis_chain = "->".join([n.plan for n in parents])
+                reward = self.reward_model.compute_reward(
+                    [hypothesis_chain],
+                    self.tokenizer,
+                    comp_description
+                )
+                rewards.append(reward)
+            max_idx = rewards.index(max(rewards))
+            return candidate_nodes[max_idx]
+
         self.logger.info(f"Draft Node Created - Metrics: {metrics}")
         self.logger.info(f"Draft Code: {code}")
         self.logger.info(f"Step {self.state.current_step}: End of drafting new solution")
@@ -283,20 +344,61 @@ class Greedy(Solver):
             Node: A new node containing the improved solution
         """
         self.logger.info(f"Step {self.state.current_step}: Starting to improve existing solution")
-        plan, code, metrics = execute_op_plan_code(
-            self.improve_fn,
-            self.task_desc,
-            self.journal,
-            parent_node,
-            self.state.current_step,
-            self.cfg.time_limit_secs - self.state.running_time,
-            get_complextiy_level(parent_node) if self.cfg.use_complexity else None,
-            self.data_preview,
-            max_operator_tries=self.cfg.max_llm_call_retries,
-        )
-        node = Node(
-            plan=plan, code=code, parents=[parent_node], operators_used=["improve"], operators_metrics=[metrics]
-        )
+        add_reward = True
+        if add_reward == False:
+            plan, code, metrics = execute_op_plan_code(
+                self.improve_fn,
+                self.task_desc,
+                self.journal,
+                parent_node,
+                self.state.current_step,
+                self.cfg.time_limit_secs - self.state.running_time,
+                get_complextiy_level(parent_node) if self.cfg.use_complexity else None,
+                self.data_preview,
+                max_operator_tries=self.cfg.max_llm_call_retries,
+            )
+            node = Node(
+                plan=plan, code=code, parents=[parent_node], operators_used=["improve"], operators_metrics=[metrics]
+            )
+        else:
+            self.logger.info("Using reward model to select among improved candidates.")
+            candidate_nodes = []
+            for i in range(3):
+                self.logger.info(f"Improving candidate solution with reward model.")
+                plan, code, metrics = execute_op_plan_code(
+                    self.improve_fn,
+                    self.task_desc,
+                    self.journal,
+                    parent_node,
+                    self.state.current_step,
+                    self.cfg.time_limit_secs - self.state.running_time,
+                    get_complextiy_level(parent_node) if self.cfg.use_complexity else None,
+                    self.data_preview,
+                    max_operator_tries=self.cfg.max_llm_call_retries,
+                )
+                node = Node(
+                    plan=plan, code=code, parents=[parent_node], operators_used=["improve"], operators_metrics=[metrics]
+                )
+                candidate_nodes.append(node)
+
+            competition_mapping_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/comp_to_scen.json"
+            comp_dict_path = competition_mapping_path
+            with open(comp_dict_path, "r") as f:
+                comp_dict = json.load(f)
+            comp_description = comp_dict[COMP_NAME]
+            rewards = []
+            for cand_node in candidate_nodes:
+                parents = cand_node.parents
+                parents.append(cand_node)
+                hypothesis_chain = "->".join([n.plan for n in parents])
+                reward = self.reward_model.compute_reward(
+                    [hypothesis_chain],
+                    self.tokenizer,
+                    comp_description
+                )
+                rewards.append(reward)
+            max_idx = rewards.index(max(rewards))
+            return candidate_nodes[max_idx]
 
         self.logger.info(f"Improve Node Created - Metrics: {metrics}")
         self.logger.info(f"Improve Code: {code}")
