@@ -696,7 +696,7 @@ class Evolutionary(Solver):
             comp_description = comp_dict[COMP_NAME]
             rewards = []
             for cand_node in candidate_nodes:
-                parents = cand_node.parents
+                parents = list(cand_node.parents)
                 parents.append(cand_node)
                 hypothesis_chain = "->".join([n.plan for n in parents])
                 reward = self.reward_model.compute_reward(
@@ -769,7 +769,7 @@ class Evolutionary(Solver):
             comp_description = comp_dict[COMP_NAME]
             rewards = []
             for cand_node in candidate_nodes:
-                parents = cand_node.parents
+                parents = list(cand_node.parents)
                 parents.append(cand_node)
                 hypothesis_chain = "->".join([n.plan for n in parents])
                 reward = self.reward_model.compute_reward(
