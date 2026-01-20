@@ -71,11 +71,10 @@ class Greedy(Solver):
         self.lower_is_better = task_info.get("lower_is_better", None)
 
         assert self.lower_is_better is not None
-
         self.setup_operators()
 
         self.state = GreedyState()
-        reward_model_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/last_run_aide_all"
+        reward_model_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/last_run_aira_all"
         reward_base_model = "Qwen/Qwen3-4B"
 
         adapter_path = os.path.join(reward_model_path, "lora_adapter")

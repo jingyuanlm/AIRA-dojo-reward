@@ -133,7 +133,7 @@ class MCTS(Solver):
         self.global_max_q_val = -1e8
         self.global_min_q_val = 1e8
 
-        reward_model_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/last_run_aide_all"
+        reward_model_path = "/data/Blob_EastUS/FinetuneAgenticLLM/reward_ckpt/last_run_aira_all"
         reward_base_model = "Qwen/Qwen3-4B"
 
         adapter_path = os.path.join(reward_model_path, "lora_adapter")
